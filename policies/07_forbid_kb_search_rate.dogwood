@@ -1,0 +1,14 @@
+// Rate limit on knowledge base searches: at most ${max_kb_searches_per_hour} per
+// rolling hour. Stops a looping or manipulated agent from scraping the corpus.
+// count includes the request being authorized.
+forbid (
+    principal,
+    action == AgentCore::Action::"${knowledge}___search_knowledge_base",
+    resource == AgentCore::Gateway::"${gateway_arn}"
+)
+when temporal {
+    exists (n: Long).
+        (count for (t: Timepoint).
+            where (formerly within 1h (AgentCore::Action::"${knowledge}___search_knowledge_base"::request{ eventResource: resource } && tp(t)))) == n
+        && n > ${max_kb_searches_per_hour}
+};

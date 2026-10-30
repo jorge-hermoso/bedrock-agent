@@ -1,0 +1,41 @@
+# OpenTofu
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Local values (account, profile); terraform.tfvars.example is committed.
+terraform.tfvars
+*.auto.tfvars
+# .terraform.lock.hcl is committed on purpose: it pins provider versions.
+
+# Build output (tools Lambda zip, agent zip)
+.build/
+agent/dist/
+agent/build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Invoke responses saved locally (can contain customer data)
+out.json
+*.out.json
+
+# Secrets and editor/OS files
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/

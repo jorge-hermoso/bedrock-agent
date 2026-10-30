@@ -1,0 +1,14 @@
+// Spending cap: refund requests in the last 24h, including this one, may not
+// total more than ${max_refund_total_cents_per_day} cents. Counts every authorized
+// request, so a refund that later failed still uses up budget.
+forbid (
+    principal,
+    action == AgentCore::Action::"${orders}___issue_refund",
+    resource == AgentCore::Gateway::"${gateway_arn}"
+)
+when temporal {
+    exists (total: Long).
+        (sum amt for (amt: Long), (t: Timepoint).
+            where (formerly within 24h (AgentCore::Action::"${orders}___issue_refund"::request{ eventResource: resource, input.amount_cents: amt } && tp(t)))) == total
+        && total > ${max_refund_total_cents_per_day}
+};

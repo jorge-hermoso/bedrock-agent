@@ -1,0 +1,15 @@
+// Anti-enumeration: block lookups once the agent has touched more than
+// ${max_distinct_customers_per_hour} distinct customers in a rolling hour.
+// Counting over customer_id alone (no timepoint) counts each customer once;
+// the current request's customer is included.
+forbid (
+    principal,
+    action == AgentCore::Action::"${orders}___lookup_order",
+    resource == AgentCore::Gateway::"${gateway_arn}"
+)
+when temporal {
+    exists (n: Long).
+        (count for (c: String).
+            where (formerly within 1h AgentCore::Action::"${orders}___lookup_order"::request{ eventResource: resource, input.customer_id: c })) == n
+        && n > ${max_distinct_customers_per_hour}
+};

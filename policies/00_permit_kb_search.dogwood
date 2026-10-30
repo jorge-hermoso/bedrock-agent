@@ -1,0 +1,15 @@
+// Knowledge base search (the agent's RAG prefetch and the model's own searches).
+// Bounded result count, so one call can't pull a large slice of the corpus.
+// AgentCore Policy is default-deny: any tool without a matching permit (including
+// tools added to the gateway later) is blocked.
+// max_results is optional; the validator needs if/has before it can be read.
+permit (
+    principal,
+    action == AgentCore::Action::"${knowledge}___search_knowledge_base",
+    resource == AgentCore::Gateway::"${gateway_arn}"
+)
+when {
+    if context.input has max_results
+    then context.input.max_results >= 1 && context.input.max_results <= ${max_kb_results}
+    else true
+};
