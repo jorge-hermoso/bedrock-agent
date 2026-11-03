@@ -36,6 +36,7 @@ out.json
 # Secrets and editor/OS files
 .env
 .env.*
+.envrc
 .DS_Store
 .idea/
 .vscode/
