@@ -1,0 +1,10 @@
+// Probing says which secret a message targets (keys and scores, never the text),
+// so it's allowed for any non-empty message. The agent calls it on every turn.
+permit (
+    principal,
+    action == AgentCore::Action::"${henchman}___probe_dossier",
+    resource == AgentCore::Gateway::"${gateway_arn}"
+)
+when {
+    context.input.query != ""
+};

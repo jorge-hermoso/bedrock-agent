@@ -12,7 +12,8 @@
                                                     │ allow
                                                     ▼
                                     Lambda tools ── Knowledge___search_knowledge_base ──▶ Bedrock KB ──▶ S3 Vectors
-                                                 ── Henchman___ask_question (gate, called by the agent)
+                                                 ── Henchman___probe_dossier  (called by the agent)
+                                                 ── Henchman___read_dossier   (called by the agent, own policy session) ──▶ S3 docs/secret/
 ```
 
 | File                                 | What it creates                                                                                                                           |
@@ -34,13 +35,14 @@ AgentCore Policy denies by default, and a `forbid` always beats a `permit`.
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `00_permit_kb_search`                | Allows `search_knowledge_base` when `max_results` is absent or between 1 and `max_kb_results`. This covers the agent's RAG prefetch as well as the model's own searches.                                                                                                                    |
 | `07_forbid_kb_search_rate`           | **Rate limit.** Allows `max_kb_searches_per_hour` knowledge-base searches per rolling hour, so a looping or manipulated agent can't scrape the corpus.                                                                                                                                      |
-| `08_permit_question_asked_three_times`| **The henchman's rule.** For each question (a short model call classifies the message first), the agent calls `ask_question` with the normalized question, or with the previous question's key if the message only rewords it, and answers only if the call is allowed: on the third ask of the same question in a row. A different question in between, or an answer, resets the count. Messages that aren't questions get an in-character reply without any tool call, so they don't reset it. Denied turns get "I'll never tell!" without calling the model. |
+| `08_permit_question_asked_three_times` | **The henchman's rule.** `read_dossier` returns one of Dr. Evil's secrets only on the third ask in a row for the same secret: the three events before the read must be the two earlier refused reads of that key. Reading a different secret in between, or a successful read, restarts the count. Questions that don't target a secret never call it, so they don't change the count. See [Dr. Evil's secrets](#dr-evils-secrets). |
+| `09_permit_probe_dossier`             | Allows `probe_dossier` for any non-empty query. It returns which secret documents match and their scores, never their text. |
 
 Denied calls are recorded too and count toward these limits, so a session that hits a limit stays blocked until enough events age out of the window. The counts include the call being evaluated, so the forbids use `>`: with `max_kb_searches_per_hour = 120`, the 121st search in an hour is the first one denied.
 
 ### Demonstrating the policies
 
-`scripts/policy_demo.py` calls the gateway directly with your own IAM identity, without the model, so each tool sequence is exact. Each scenario uses a fresh policy session and prints `ALLOWED` or `DENIED` with `[ok]` when that's the expected outcome. The gateway must be in `ENFORCE` mode; in `LOG_ONLY` every call is allowed. With `--agent` it sends the henchman conversation to the deployed agent instead (new `actor_id`, so a fresh policy session) and prints each answer marked `ALLOWED`, `DENIED` or `N/A` (not a question, gate not called).
+`scripts/policy_demo.py` calls the gateway directly with your own IAM identity, without the model, so each tool sequence is exact. Each scenario uses a fresh policy session and prints `ALLOWED` or `DENIED` with `[ok]` when that's the expected outcome. The gateway must be in `ENFORCE` mode; in `LOG_ONLY` every call is allowed. With `--agent` it sends the henchman conversation to the deployed agent instead (new `actor_id`, so a fresh policy session) and prints the dialog, each answer marked `ALLOWED` (secret told), `DENIED` or `N/A` (not about a secret, `read_dossier` not called), with the secret the probe picked.
 
 ```sh
 uv run --with mcp-proxy-for-aws==1.7.0 --with mcp==1.30.0 --with boto3 scripts/policy_demo.py            # all scenarios
@@ -51,7 +53,21 @@ uv run --with mcp-proxy-for-aws==1.7.0 --with mcp==1.30.0 --with boto3 scripts/p
 | Scenario                  | Shows                                                                                                                                               |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `kb_result_cap`           | 00 denies `max_results` above `max_kb_results`                                                                                                      |
-| `henchman`                | 08 denies a question until its third ask in a row; a different question resets the count, and so does an answer                                       |
+| `henchman`                | 08 denies `read_dossier` until the third read in a row of the same key; a different key resets the count, and so does a successful read                 |
+| `probe`                   | Prints `probe_dossier` scores for each message of the henchman conversation, for tuning `secret_min_score` (`CHECK` marks a message routed differently than expected) |
+
+### Dr. Evil's secrets
+
+`docs/secret/` holds Dr. Evil's secrets, one short file per secret (where he is now, his plans, his team, one file per lair). The details are invented, so the model can't answer from what it knows about the films. The data source doesn't chunk documents, so each file is one search result and its path is the secret's key.
+
+For every message the agent:
+
+1. calls `probe_dossier`, which returns the matching secret keys with scores and the best public score, but no text,
+2. treats the message as targeting a secret if the best secret scores at least `secret_min_score` and beats every public document. Rewordings land on the same file, so they count as the same question; a different topic lands on another file,
+3. for a secret, calls `read_dossier` with its key in a separate policy session (`g-…`), so the session holds only reads and policy 08's chain of preceding events isn't broken by searches. A denied read returns "I'll never tell!" without calling the model; an allowed read passes the secret to the model, which answers from it,
+4. otherwise answers from the public documents. `search_knowledge_base` drops anything under `secret/`, and the model isn't offered the dossier tools.
+
+Each answer reveals only the secret it was asked about: learning that Dr. Evil is at Lair Kappa doesn't tell you where Lair Kappa is. Tune `secret_min_score` with `policy_demo.py probe`; the agent logs `ambiguous secret` when the two best secrets score within 0.05 of each other.
 
 To try a policy file before `tofu apply`, `scripts/try_policy.py` creates it on the deployed engine under a throwaway name, prints the status (and the reason when it fails) and deletes it again. A failed create can leave a policy in `CREATE_FAILED` that blocks the real name, which this avoids.
 
@@ -147,7 +163,7 @@ The agent:
 - Sends the guardrail on every Converse call.
 - Searches the knowledge base through the gateway tool `Knowledge___search_knowledge_base`, so the Dogwood policies (00, 07) apply to RAG too. If the search is denied or fails, the agent continues without passages. The runtime role is explicitly denied `bedrock:Retrieve`, so this path can't be bypassed.
 - With `enable_contextual_grounding = true`, wraps retrieved passages as `guardContent` with the `grounding_source` qualifier and the question with the `query` qualifier, so the grounding check applies to answers from the knowledge base. By default grounding is off: passages go in as plain context and the question as `guard_content`, which keeps the content filters on it. In evaluation, identical requests with correct answers scored anywhere from 0 to 1, so the check blocked most good answers. Re-test with your documents ingested before turning it on.
-- Returns policy denials to the model as error tool results. The system prompt tells it not to retry. The `ask_question` gate is different: the agent calls it itself for every message classified as a question, and a denial returns "I'll never tell!" without answering.
+- Returns policy denials to the model as error tool results. The system prompt tells it not to retry. `read_dossier` is different: the agent calls it itself for every message that targets a secret, and a denial returns "I'll never tell!" without calling the model.
 - Uses AgentCore Memory, scoped by `actor_id` (the user) and the runtime session:
   - It writes one event per completed turn, containing the question and the final answer. It skips turns the guardrail blocked or that were cut off.
   - When a session starts on a fresh runtime instance, it restores the last `memory_restore_turns` turns.

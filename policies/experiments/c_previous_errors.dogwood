@@ -4,12 +4,12 @@
 // denies the third ask.
 permit (
     principal,
-    action == AgentCore::Action::"${henchman}___ask_question",
+    action == AgentCore::Action::"${henchman}___read_dossier",
     resource == AgentCore::Gateway::"${gateway_arn}"
 )
 when temporal {
     previous within ${question_repeat_window} (
-        AgentCore::Action::"${henchman}___ask_question"::error{ eventResource: resource, input.question: context.input.question }
+        AgentCore::Action::"${henchman}___read_dossier"::error{ eventResource: resource, input.key: context.input.key }
         && previous within ${question_repeat_window}
-            AgentCore::Action::"${henchman}___ask_question"::error{ eventResource: resource, input.question: context.input.question })
+            AgentCore::Action::"${henchman}___read_dossier"::error{ eventResource: resource, input.key: context.input.key })
 };

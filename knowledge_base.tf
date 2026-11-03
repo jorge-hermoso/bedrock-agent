@@ -149,12 +149,10 @@ resource "aws_bedrockagent_data_source" "docs" {
   }
 
   vector_ingestion_configuration {
+    # One chunk per document: each secret is one short file, and its file path is
+    # the key the three question rule counts on.
     chunking_configuration {
-      chunking_strategy = "FIXED_SIZE"
-      fixed_size_chunking_configuration {
-        max_tokens         = 512
-        overlap_percentage = 20
-      }
+      chunking_strategy = "NONE"
     }
   }
 }

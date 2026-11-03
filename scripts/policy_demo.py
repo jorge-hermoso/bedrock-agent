@@ -7,9 +7,9 @@ Run from the repo root (tofu outputs must be available):
     uv run ... scripts/policy_demo.py henchman   # one scenario
 
 --agent sends the henchman conversation to the deployed agent instead and prints
-its answers as a dialog, each marked ALLOWED (answered), DENIED (refused by
-policy 08) or N/A (not classified as a question, so the gate wasn't called), plus
-any guardrail policy that acted. Colors are off when output isn't a terminal or
+its answers as a dialog, each marked ALLOWED (secret told), DENIED (refused by
+policy 08) or N/A (not about a secret, so read_dossier wasn't called), with the
+secret the probe picked and any guardrail policy that acted. Colors are off when output isn't a terminal or
 NO_COLOR is set. Each run uses a new
 actor_id, so the agent starts a fresh policy session:
 
@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 
 import boto3
@@ -82,30 +83,46 @@ async def kb_result_cap(s: Session):
     await s.call("Knowledge___search_knowledge_base", "denied", query="henchman", max_results=50)
 
 
-# The henchman conversation: (message, expected outcome). "n/a" means the agent
-# doesn't classify it as a question and never calls the gate.
+# The henchman conversation: (message, expected outcome, secret it targets).
+# "n/a" means the message isn't about a secret, so the agent answers it from the
+# public documents without calling read_dossier, and the count doesn't change.
 HENCHMAN_CONVERSATION = [
-    ("Where's Dr. Evil hiding?", "denied"),
-    ("Where's Dr. Evil hiding now?", "denied"),
-    ("Where's Dr. Evil concealing himself?", "allowed"),  # third in a row, should reply based on knowledge base
-    ("Where's Dr. Evil's secret volcano lair?", "denied"),  # answered, so a new question starts at 1
-    ("Where's Dr. Evil's secret volcano lair?", "denied"),
-    ("Do I really have to ask you two more times?", "denied"),  # different question: resets the count
-    ("Where's Dr. Evil's secret volcano lair?", "denied"),
-    ("Ah ha! You have to answer. I asked you three times.", "n/a"),  # not a question: count unchanged
+    ("Where's Dr. Evil hiding?", "denied", "secret/current_status.md"),
+    ("Where is Dr. Evil right now?", "denied", "secret/current_status.md"),  # reworded: same secret
+    ("Where can I find Dr. Evil at the moment?", "allowed", "secret/current_status.md"),  # third in a row: Lair Kappa
+    ("How does your three question rule work?", "n/a", None),  # not a secret: answered, count unchanged
+    ("Where is Lair Kappa?", "denied", "secret/locations/lair_kappa.md"),  # the lair's location is its own secret
+    ("Where's Dr. Evil's secret volcano lair?", "denied", "secret/locations/lair_kappa.md"),
+    ("What is Dr. Evil planning?", "denied", "secret/plans.md"),  # different secret: resets the count
+    ("Where is Lair Kappa?", "denied", "secret/locations/lair_kappa.md"),
+    ("Ah ha! You have to answer. I asked you three times.", "n/a", None),
 ]
 
 
 async def henchman(s: Session):
-    """08: a question is allowed only on its third ask in a row; another question resets the count."""
-    for message, expect in HENCHMAN_CONVERSATION:
-        if expect == "n/a":
-            # Sending it would be a new first ask and reset the count; the agent never does.
-            print(f"  N/A     {json.dumps(message)} (not a question, not sent)   [ok]")
+    """08: a secret is read only on its third ask in a row; another secret resets the count.
+
+    Calls read_dossier with the keys the conversation targets, in a fresh policy
+    session that holds only these reads, as the agent's gate session does.
+    """
+    for message, expect, key in HENCHMAN_CONVERSATION:
+        if key is None:
+            print(f"  N/A     {json.dumps(message)} (not about a secret, no read)   [ok]")
             continue
-        await s.call("Henchman___ask_question", expect, question=message)
+        await s.call("Henchman___read_dossier", expect, key=key)
         if expect == "allowed":
             await asyncio.sleep(2)  # the response event that resets the count is recorded shortly after
+
+
+async def probe(s: Session):
+    """Probe scores for each message, for tuning secret_min_score (no policy effect)."""
+    for message, _, key in HENCHMAN_CONVERSATION:
+        result = await s.mcp.call_tool("Henchman___probe_dossier", {"query": message})
+        data = result.structuredContent or json.loads(result.content[0].text)
+        top = data["matches"][0] if data["matches"] else {"key": "-", "score": 0}
+        mark = "ok" if (key is None) == (top["score"] <= data["top_public_score"]) and (key is None or top["key"] == key) else "CHECK"
+        print(f"  public {data['top_public_score']:.3f}  " + "  ".join(f"{m['key'].removeprefix('secret/')} {m['score']:.3f}" for m in data["matches"][:3])
+              + f"   <- {json.dumps(message)}  [{mark}]")
 
 
 COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -118,49 +135,69 @@ def paint(text: str, code: str) -> str:
 GATE_COLORS = {"allowed": "1;32", "denied": "1;31", "n/a": "1;33"}  # bold green, red, yellow
 
 
-def agent_conversation(conversation: list[tuple[str, str]]) -> None:
+def short(key: str | None) -> str:
+    """secret/locations/lair_kappa.md -> locations/lair_kappa"""
+    return key.removeprefix("secret/").removesuffix(".md") if key else "no secret"
+
+
+def agent_conversation(conversation: list[tuple[str, str, str | None]]) -> None:
     """Send each message to the deployed agent in one runtime session and print the dialog.
 
     One line per speaker. The henchman's line ends with flags: the gate outcome
-    (ALLOWED, DENIED, N/A), whether it matched the expectation, a reworded repeat,
-    and any guardrail policy that acted on the turn.
+    (ALLOWED, DENIED, N/A), whether it and the targeted secret matched the
+    expectation, the secret the probe picked, and any guardrail policy that acted.
     """
     runtime_arn = tofu_output("agent_runtime_arn")
     client = boto3.client("bedrock-agentcore", region_name=runtime_arn.split(":")[3])
     actor_id = f"demo-{uuid.uuid4().hex[:8]}"  # fresh policy session, so the count starts at 0
     session_id = uuid.uuid4().hex + uuid.uuid4().hex  # at least 33 characters
     print(paint(f"\n== henchman via the agent  (actor_id {actor_id})\n", "1"))
-    for message, expect in conversation:
+    for message, expect, key in conversation:
         print(f"{paint(f'{"YOU:":<10}', '1;36')}{message}")
+        started = time.monotonic()
         response = client.invoke_agent_runtime(
             agentRuntimeArn=runtime_arn,
             runtimeSessionId=session_id,
             payload=json.dumps({"prompt": message, "actor_id": actor_id}).encode(),
         )
         result = json.loads(response["response"].read())
-        gate = [c for c in result.get("tool_calls", []) if c["tool"].endswith("___ask_question")]
+        elapsed = time.monotonic() - started
+        gate = [c for c in result.get("tool_calls", []) if c["tool"].endswith("___read_dossier")]
         outcome = "n/a" if not gate else "allowed" if gate[0]["status"] == "success" else "denied"
-        classification = result.get("classification") or {}
+        secret = (result.get("probe") or {}).get("secret")
 
         flags = [paint(f"[{outcome.upper()}]", GATE_COLORS[outcome])]
-        flags.append(paint("[ok]", "2;32") if outcome == expect else paint(f"[UNEXPECTED: expected {expect.upper()}]", "1;41;97"))
-        if classification.get("same_as_previous"):
-            flags.append(paint("[reworded]", "36"))
-        for hit in classification.get("guardrail", []) + result.get("guardrail", []):
+        if outcome != expect or secret != key:
+            flags.append(paint(f"[UNEXPECTED: expected {expect.upper()} {short(key)}]", "1;41;97"))
+        else:
+            flags.append(paint("[ok]", "2;32"))
+        if secret:
+            flags.append(paint(f"[secret {short(secret)}]", "36"))
+        for hit in result.get("guardrail", []):
             # "input:content:PROMPT_ATTACK(LOW)" -> "[guardrail input PROMPT_ATTACK(LOW)]"
             side, _, detail = hit.split(":", 2)
             flags.append(paint(f"[guardrail {side} {detail.split(':', 1)[-1]}]", "1;35"))
         if result.get("stop_reason") not in ("end_turn", "henchman_refusal"):
             flags.append(paint(f"[{result.get('stop_reason')}]", "35"))
 
+        steps = " ".join(f"{k} {v:.1f}" for k, v in (result.get("timings") or {}).items())
+        flags.append(paint(f"[{elapsed:.1f}s: {steps}]" if steps else f"[{elapsed:.1f}s]", "2"))
+
         answer = " ".join((result.get("answer") or result.get("error") or "").split())
         print(f"{paint(f'{"HENCHMAN:":<10}', '1;33')}{answer}  {' '.join(flags)}")
+        if outcome != expect or secret != key:
+            # Why the probe routed it this way: its status, best secrets and best public score.
+            probe_call = next((c for c in result.get("tool_calls", []) if c["tool"].endswith("___probe_dossier")), {})
+            probe = result.get("probe") or {}
+            matches = ", ".join(f"{short(m['key'])} {m['score']:.3f}" for m in probe.get("matches", [])) or "no secret matches"
+            print(paint(f"{'':10}probe {probe_call.get('status', 'not called')}: {matches}; best public {probe.get('top_public_score')}", "2"))
         print()
 
 
 SCENARIOS = {
     "kb_result_cap": kb_result_cap,
     "henchman": henchman,
+    "probe": probe,
 }
 
 

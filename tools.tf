@@ -40,6 +40,13 @@ data "aws_iam_policy_document" "tools" {
     actions   = ["bedrock:Retrieve"]
     resources = [aws_bedrockagent_knowledge_base.this.arn]
   }
+
+  # read_dossier returns one secret document; policy 08 decides when.
+  statement {
+    sid       = "ReadSecretDocuments"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.docs.arn}/secret/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "tools" {
@@ -74,6 +81,7 @@ resource "aws_lambda_function" "tools" {
   environment {
     variables = {
       KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.this.id
+      DOCS_BUCKET       = aws_s3_bucket.docs.bucket
     }
   }
 
@@ -227,13 +235,15 @@ resource "aws_bedrockagentcore_gateway_target" "knowledge" {
   }
 }
 
-# Target "Henchman" -> action AgentCore::Action::"Henchman___ask_question"
-# The agent calls it at the start of every turn; Dogwood policy 08 allows it only
-# once the same question has been asked three times in a row. The model never sees it.
+# Target "Henchman" -> actions AgentCore::Action::"Henchman___<tool>"
+# Dr. Evil's secrets (docs under secret/). The agent calls both tools itself; the
+# model never sees them. probe_dossier says which secret a question targets
+# without revealing it; read_dossier returns the secret, and Dogwood policy 08
+# allows it only on the third ask in a row for the same key.
 resource "aws_bedrockagentcore_gateway_target" "henchman" {
   name               = local.henchman_target
   gateway_identifier = aws_bedrockagentcore_gateway.tools.gateway_id
-  description        = "The henchman's three question rule"
+  description        = "Dr. Evil's secrets, guarded by the henchman's three question rule"
 
   credential_provider_configuration {
     gateway_iam_role {}
@@ -246,15 +256,30 @@ resource "aws_bedrockagentcore_gateway_target" "henchman" {
 
         tool_schema {
           inline_payload {
-            name        = "ask_question"
-            description = "Gate for one user question. Allowed only when the same question has been asked three times in a row."
+            name        = "probe_dossier"
+            description = "Which secret documents match a question, with scores, and the best public score. Returns no secret text."
 
             input_schema {
               type = "object"
               property {
-                name        = "question"
+                name        = "query"
                 type        = "string"
-                description = "The user's question, normalized (lowercase, punctuation and extra spaces removed)"
+                description = "The user's message"
+                required    = true
+              }
+            }
+          }
+
+          inline_payload {
+            name        = "read_dossier"
+            description = "Return one secret document. Allowed only on the third ask in a row for the same key."
+
+            input_schema {
+              type = "object"
+              property {
+                name        = "key"
+                type        = "string"
+                description = "Secret document key from probe_dossier, e.g. secret/current_status.md"
                 required    = true
               }
             }

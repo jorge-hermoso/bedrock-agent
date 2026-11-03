@@ -1,31 +1,32 @@
-// The henchman's rule (Austin Powers: The Spy Who Shagged Me): a question is answered
-// only on its third ask in a row. The agent calls ask_question with the
-// normalized question at the start of every turn and answers only if this
-// permit allows it; a denied turn makes no other tool calls.
+// The henchman's rule (Austin Powers: The Spy Who Shagged Me): a secret is told
+// only on its third ask in a row. The agent probes each message for the secret it
+// targets and calls read_dossier with that secret's key; only an allowed call
+// returns the secret. read_dossier runs in its own policy session per user, so
+// these are the only events in its trace.
 //
-// A denied ask records a request and then an error event, so the two earlier
-// asks of this question sit immediately before the current request as
-// error(i-1), request(i-2), error(i-3) (whose request is at i-4). Anything in
-// between breaks the chain and restarts the count: an ask for a different
-// question, or an answer (an allowed ask records a response, not an error).
+// A denied read records a request and then an error event, so the two earlier
+// asks for this key sit immediately before the current request as error(i-1),
+// request(i-2), error(i-3) (whose request is at i-4). Anything in between breaks
+// the chain and restarts the count: a read of a different secret, or a successful
+// read (it records a response, not an error).
 //
 // Three nested `previous` is the maximum a policy may use, so the count of 3 is
 // fixed by the shape of the chain. A count-over-`since` version that reset on a
-// different question (negated request on the left of `since`) fails creation
-// with an internal error.
+// different key (negated request on the left of `since`) fails creation with an
+// internal error.
 permit (
     principal,
-    action == AgentCore::Action::"${henchman}___ask_question",
+    action == AgentCore::Action::"${henchman}___read_dossier",
     resource == AgentCore::Gateway::"${gateway_arn}"
 )
 when temporal {
     previous within ${question_repeat_window} (
-        AgentCore::Action::"${henchman}___ask_question"::error{ eventResource: resource, input.question: context.input.question }
+        AgentCore::Action::"${henchman}___read_dossier"::error{ eventResource: resource, input.key: context.input.key }
         && previous within ${question_repeat_window} (
-            AgentCore::Action::"${henchman}___ask_question"::request{ eventResource: resource, input.question: context.input.question }
+            AgentCore::Action::"${henchman}___read_dossier"::request{ eventResource: resource, input.key: context.input.key }
             && previous within ${question_repeat_window}
-                AgentCore::Action::"${henchman}___ask_question"::error{ eventResource: resource, input.question: context.input.question }))
+                AgentCore::Action::"${henchman}___read_dossier"::error{ eventResource: resource, input.key: context.input.key }))
 }
 when {
-    context.input.question != ""
+    context.input.key != ""
 };
