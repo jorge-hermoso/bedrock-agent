@@ -90,6 +90,7 @@ To add a rule, drop a new `NN_name.dogwood` file in `policies/`. The files are `
 
 ```sh
 cp terraform.tfvars.example terraform.tfvars
+export TF_VAR_state_bucket=<your-state-bucket>  # S3 bucket for the OpenTofu state (e.g. in .envrc)
 tofu init
 ./agent/package.sh                           # builds agent/dist/agent.zip (arm64 wheels + app.py)
 tofu apply                                   # uploads the zip and creates the runtime

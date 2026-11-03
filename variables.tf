@@ -20,6 +20,11 @@ variable "aws_profile" {
   type        = string
 }
 
+variable "state_bucket" {
+  description = "S3 bucket holding the OpenTofu state. Set TF_VAR_state_bucket (e.g. in .envrc)."
+  type        = string
+}
+
 variable "tags" {
   description = "Extra tags applied to every resource."
   type        = map(string)

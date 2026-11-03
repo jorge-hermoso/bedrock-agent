@@ -17,7 +17,7 @@ terraform {
   }
 
   backend "s3" {
-    bucket       = "<state-bucket>"
+    bucket       = var.state_bucket
     key          = "bedrock-agent/terraform.tfstate"
     region       = var.region
     profile      = var.aws_profile
