@@ -6,13 +6,6 @@ model_id = "global.anthropic.claude-sonnet-5-5" # or "eu.anthropic.claude-sonnet
 # Start in LOG_ONLY, review decisions, then switch to ENFORCE.
 policy_enforcement_mode = "LOG_ONLY"
 
-max_refund_cents                = 20000  # $200 per refund
-max_refunds_per_hour            = 5
-max_refund_total_cents_per_day  = 100000 # $1,000 / rolling 24h
-max_distinct_customers_per_hour = 20
-approval_window                 = "1h"
-auto_approve_refund_cents       = 5000   # stub approver threshold
-
 # No-egress networking (default). ~$32/month idle with one endpoint AZ.
 runtime_network_mode = "VPC"
 vpc_az_ids           = ["euw1-az1", "euw1-az2"] # must be AgentCore-supported AZ IDs in your region

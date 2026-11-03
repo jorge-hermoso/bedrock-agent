@@ -266,6 +266,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     # Marks passages and question for the guardrail's contextual grounding check.
     GUARDRAIL_GROUNDING = tostring(var.enable_contextual_grounding)
     KB_SEARCH_TOOL      = "${local.knowledge_target}___search_knowledge_base"
+    ASK_QUESTION_TOOL   = "${local.henchman_target}___ask_question"
     GATEWAY_URL         = aws_bedrockagentcore_gateway.tools.gateway_url
     MEMORY_ID           = aws_bedrockagentcore_memory.agent.id
     MEMORY_LONG_TERM    = tostring(var.enable_long_term_memory)

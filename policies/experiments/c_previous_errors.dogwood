@@ -1,0 +1,15 @@
+// Fallback for policy 08, in case a denied ask records only an error event (no
+// request): then the two earlier asks are error(i-1), error(i-2). Not deployed
+// (policies.tf only reads policies/*.dogwood); swap it in if the henchman demo
+// denies the third ask.
+permit (
+    principal,
+    action == AgentCore::Action::"${henchman}___ask_question",
+    resource == AgentCore::Gateway::"${gateway_arn}"
+)
+when temporal {
+    previous within ${question_repeat_window} (
+        AgentCore::Action::"${henchman}___ask_question"::error{ eventResource: resource, input.question: context.input.question }
+        && previous within ${question_repeat_window}
+            AgentCore::Action::"${henchman}___ask_question"::error{ eventResource: resource, input.question: context.input.question })
+};

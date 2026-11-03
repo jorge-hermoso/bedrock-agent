@@ -1,13 +1,13 @@
 # AgentCore Memory.
 #
 # Short-term: the agent writes one event per conversation turn (user question +
-# final answer), keyed by actor (customer) and runtime session. A session that
+# final answer), keyed by actor (user) and runtime session. A session that
 # lands on a fresh runtime instance restores its recent turns from these events.
 #
 # Long-term: built-in strategies extract records from those events asynchronously.
 # The agent retrieves them at the start of each session:
-#   /preferences/{actorId}/            how the customer likes to be helped
-#   /facts/{actorId}/                  durable facts the customer told us
+#   /preferences/{actorId}/            how the user likes to be answered
+#   /facts/{actorId}/                  durable facts the user told us
 #   /summaries/{actorId}/{sessionId}/  one summary per past conversation
 
 resource "aws_bedrockagentcore_memory" "agent" {

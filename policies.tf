@@ -17,16 +17,12 @@ resource "aws_bedrockagentcore_policy_engine" "tools" {
 
 locals {
   policy_vars = {
-    gateway_arn                     = aws_bedrockagentcore_gateway.tools.gateway_arn
-    knowledge                       = local.knowledge_target
-    orders                          = local.orders_target
-    approval_window                 = var.approval_window
-    max_refund_cents                = var.max_refund_cents
-    max_refunds_per_hour            = var.max_refunds_per_hour
-    max_refund_total_cents_per_day  = var.max_refund_total_cents_per_day
-    max_distinct_customers_per_hour = var.max_distinct_customers_per_hour
-    max_kb_results                  = var.max_kb_results
-    max_kb_searches_per_hour        = var.max_kb_searches_per_hour
+    gateway_arn              = aws_bedrockagentcore_gateway.tools.gateway_arn
+    knowledge                = local.knowledge_target
+    henchman                 = local.henchman_target
+    max_kb_results           = var.max_kb_results
+    max_kb_searches_per_hour = var.max_kb_searches_per_hour
+    question_repeat_window   = var.question_repeat_window
   }
 
   # policies/NN_snake_name.dogwood -> policy named "<name>_snake_name"
@@ -81,7 +77,7 @@ resource "aws_cloudcontrolapi_resource" "policy" {
   # Tool schemas must exist before validation can resolve the actions they reference.
   depends_on = [
     aws_bedrockagentcore_gateway_target.knowledge,
-    aws_bedrockagentcore_gateway_target.orders,
+    aws_bedrockagentcore_gateway_target.henchman,
   ]
 }
 
@@ -94,16 +90,8 @@ resource "aws_cloudcontrolapi_resource" "forbid_policy" {
   depends_on = [aws_cloudcontrolapi_resource.policy]
 }
 
-# Forbids created before the split; keeps them instead of recreating.
-moved {
-  from = aws_cloudcontrolapi_resource.policy["forbid_customer_enumeration"]
-  to   = aws_cloudcontrolapi_resource.forbid_policy["forbid_customer_enumeration"]
-}
+# Forbid created before the split; keeps it instead of recreating it.
 moved {
   from = aws_cloudcontrolapi_resource.policy["forbid_kb_search_rate"]
   to   = aws_cloudcontrolapi_resource.forbid_policy["forbid_kb_search_rate"]
-}
-moved {
-  from = aws_cloudcontrolapi_resource.policy["forbid_refund_rate"]
-  to   = aws_cloudcontrolapi_resource.forbid_policy["forbid_refund_rate"]
 }

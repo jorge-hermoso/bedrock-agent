@@ -22,7 +22,7 @@ resource "aws_bedrock_guardrail" "agent" {
     # Prompt-injection / jailbreak detection only applies to input.
     filters_config {
       type            = "PROMPT_ATTACK"
-      input_strength  = "HIGH"
+      input_strength  = var.prompt_attack_strength
       output_strength = "NONE"
     }
   }

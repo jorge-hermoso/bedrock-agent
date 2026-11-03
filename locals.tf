@@ -26,5 +26,5 @@ locals {
   # Gateway target names become the prefix of the Cedar/Dogwood action:
   #   AgentCore::Action::"<TargetName>___<tool_name>"
   knowledge_target = "Knowledge"
-  orders_target    = "Orders"
+  henchman_target  = "Henchman"
 }

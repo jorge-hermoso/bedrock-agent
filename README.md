@@ -1,4 +1,4 @@
-# Bedrock agent: guardrails, RAG, and Dogwood tool policies (OpenTofu)
+# Henchman role-play agent: guardrails, RAG, and Dogwood tool policies (OpenTofu)
 
 ```
              ┌──────────── AgentCore Runtime (zip, no-egress VPC) ────────────────┐
@@ -12,16 +12,14 @@
                                                     │ allow
                                                     ▼
                                     Lambda tools ── Knowledge___search_knowledge_base ──▶ Bedrock KB ──▶ S3 Vectors
-                                                 ── Orders___lookup_order
-                                                 ── Orders___request_refund_approval
-                                                 ── Orders___issue_refund
+                                                 ── Henchman___ask_question (gate, called by the agent)
 ```
 
 | File                                 | What it creates                                                                                                                           |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `guardrail.tf`                       | Guardrail (content filters, prompt-attack, denied topics, PII block/mask, profanity, optional contextual grounding) plus a pinned version |
 | `knowledge_base.tf`                  | S3 docs bucket, S3 Vectors bucket/index, KB role, Knowledge Base, S3 data source                                                          |
-| `tools.tf`                           | Tools Lambda, AgentCore Gateway (IAM auth, policy engine attached), two gateway targets                                                   |
+| `tools.tf`                           | Tools Lambda, AgentCore Gateway (IAM auth, policy engine attached), Knowledge and Henchman gateway targets                                 |
 | `policies.tf` + `policies/*.dogwood` | Policy engine and one policy per `.dogwood` file                                                                                          |
 | `memory.tf`                          | AgentCore Memory (short-term events) and long-term strategies for preferences, facts and session summaries                                |
 | `runtime.tf`                         | Code bucket and zip upload, runtime role (model access only with the guardrail), AgentCore Runtime (created once the zip exists)          |
@@ -35,33 +33,31 @@ AgentCore Policy denies by default, and a `forbid` always beats a `permit`.
 | File                                 | Rule                                                                                                                                                                                                                                                                                        |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `00_permit_kb_search`                | Allows `search_knowledge_base` when `max_results` is absent or between 1 and `max_kb_results`. This covers the agent's RAG prefetch as well as the model's own searches.                                                                                                                    |
-| `01_permit_lookup_order`             | Allows `lookup_order` with a non-empty order and customer ID. Any tool without a permit is denied.                                                                                                                                                                                          |
-| `02_permit_approval_after_lookup`    | **Ordering.** `request_refund_approval` is allowed only after a successful `lookup_order` for the same order within `approval_window`.                                                                                                                                                      |
-| `03_permit_refund_requires_approval` | **Prerequisite.** `issue_refund` is allowed only if the amount is ≤ `max_refund_cents` and an approval with `approved=true` exists for the same order and amount within `approval_window`. Each approval covers one refund: a completed refund of that order since the approval uses it up. |
-| `04_forbid_refund_rate`              | **Rate limit.** Allows `max_refunds_per_hour` refunds per rolling hour.                                                                                                                                                                                                                     |
-| `05_forbid_refund_daily_total`       | **Rolling sum.** Refunds in the last 24h plus the current one must stay ≤ `max_refund_total_cents_per_day`.                                                                                                                                                                                 |
-| `06_forbid_customer_enumeration`     | **Distinct count.** Allows `max_distinct_customers_per_hour` distinct customers looked up per hour.                                                                                                                                                                                         |
 | `07_forbid_kb_search_rate`           | **Rate limit.** Allows `max_kb_searches_per_hour` knowledge-base searches per rolling hour, so a looping or manipulated agent can't scrape the corpus.                                                                                                                                      |
+| `08_permit_question_asked_three_times`| **The henchman's rule.** For each question (a short model call classifies the message first), the agent calls `ask_question` with the normalized question, or with the previous question's key if the message only rewords it, and answers only if the call is allowed: on the third ask of the same question in a row. A different question in between, or an answer, resets the count. Messages that aren't questions get an in-character reply without any tool call, so they don't reset it. Denied turns get "I'll never tell!" without calling the model. |
 
-Denied calls are recorded too and count toward these limits, so a session that hits a limit stays blocked until enough events age out of the window. The counts and sums include the call being evaluated, so the forbids use `>`: with `max_refunds_per_hour = 5`, the sixth refund in an hour is the first one denied.
+Denied calls are recorded too and count toward these limits, so a session that hits a limit stays blocked until enough events age out of the window. The counts include the call being evaluated, so the forbids use `>`: with `max_kb_searches_per_hour = 120`, the 121st search in an hour is the first one denied.
 
 ### Demonstrating the policies
 
-`scripts/policy_demo.py` calls the gateway directly with your own IAM identity, without the model, so each tool sequence is exact. Each scenario uses a fresh policy session and prints `ALLOWED` or `DENIED` with `[ok]` when that's the expected outcome. The gateway must be in `ENFORCE` mode; in `LOG_ONLY` every call is allowed.
+`scripts/policy_demo.py` calls the gateway directly with your own IAM identity, without the model, so each tool sequence is exact. Each scenario uses a fresh policy session and prints `ALLOWED` or `DENIED` with `[ok]` when that's the expected outcome. The gateway must be in `ENFORCE` mode; in `LOG_ONLY` every call is allowed. With `--agent` it sends the henchman conversation to the deployed agent instead (new `actor_id`, so a fresh policy session) and prints each answer marked `ALLOWED`, `DENIED` or `N/A` (not a question, gate not called).
 
 ```sh
-uv run --with mcp-proxy-for-aws==1.7.0 --with mcp==1.30.0 scripts/policy_demo.py              # all scenarios
-uv run --with mcp-proxy-for-aws==1.7.0 --with mcp==1.30.0 scripts/policy_demo.py happy_path   # one scenario
+uv run --with mcp-proxy-for-aws==1.7.0 --with mcp==1.30.0 --with boto3 scripts/policy_demo.py            # all scenarios
+uv run --with mcp-proxy-for-aws==1.7.0 --with mcp==1.30.0 --with boto3 scripts/policy_demo.py henchman   # one scenario
+uv run --with mcp-proxy-for-aws==1.7.0 --with mcp==1.30.0 --with boto3 scripts/policy_demo.py --agent    # henchman conversation through the agent
 ```
 
 | Scenario                  | Shows                                                                                                                                               |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refund_without_approval` | 03 denies `issue_refund` with no approval                                                                                                           |
-| `approval_without_lookup` | 02 denies an approval for an order not looked up                                                                                                    |
-| `happy_path`              | lookup → approval → refund is allowed once; a different amount, or a second refund, is denied                                                       |
-| `rejected_approval`       | 03 denies a refund whose approval returned `approved=false`                                                                                         |
 | `kb_result_cap`           | 00 denies `max_results` above `max_kb_results`                                                                                                      |
-| `enumeration`             | 06 denies the 21st distinct customer in an hour. The denied attempt still counts, so every lookup stays denied until the oldest one is an hour old. |
+| `henchman`                | 08 denies a question until its third ask in a row; a different question resets the count, and so does an answer                                       |
+
+To try a policy file before `tofu apply`, `scripts/try_policy.py` creates it on the deployed engine under a throwaway name, prints the status (and the reason when it fails) and deletes it again. A failed create can leave a policy in `CREATE_FAILED` that blocks the real name, which this avoids.
+
+```sh
+uv run --with boto3 scripts/try_policy.py policies/08_permit_question_asked_three_times.dogwood
+```
 
 ### Policy sessions
 
@@ -72,7 +68,7 @@ Two consequences:
 - **The limits are per user, not global.** Whoever chooses the session ID can reset the counts. Here that's the agent, keyed on the `actor_id` it was invoked with, so the limits hold only as far as you trust the caller's `actor_id`. A global cap (all users together) needs a check outside Dogwood, for example in the tool Lambda.
 - **A policy change resets history.** Changing a temporal policy invalidates open sessions, and the gateway answers `409`. A hash of the rendered policies goes to the runtime as `POLICY_SET` and is mixed into the session ID, so after a deploy the agent starts fresh sessions. Counts restart at zero when you change a policy.
 
-To add a rule, drop a new `NN_name.dogwood` file in `policies/`. The files are `templatefile`s and can use `${gateway_arn}`, `${orders}`, `${knowledge}` and the limit variables. Actions are named `AgentCore::Action::"<TargetName>___<tool>"`. Amounts are integer cents because ordering comparisons and `sum` accept only integers (`Long`). Every temporal predicate must include `eventResource: resource`. Syntax and examples: [Temporal policy examples](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/example-policies-temporal.html) and the [Dogwood language guide](https://dogwood-policy.github.io/dogwood/index.html). Limits: 20 temporal policies per engine, 3 temporal operators per policy, 24h maximum window.
+To add a rule, drop a new `NN_name.dogwood` file in `policies/`. The files are `templatefile`s and can use `${gateway_arn}`, `${knowledge}`, `${henchman}` and the limit variables. Actions are named `AgentCore::Action::"<TargetName>___<tool>"`. Ordering comparisons and `sum` accept only integers (`Long`). Every temporal predicate must include `eventResource: resource`. Syntax and examples: [Temporal policy examples](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/example-policies-temporal.html) and the [Dogwood language guide](https://dogwood-policy.github.io/dogwood/index.html). Limits: 20 temporal policies per engine, 3 temporal operators per policy, 24h maximum window.
 
 ## Deploy
 
@@ -89,10 +85,12 @@ aws bedrock-agentcore invoke-agent-runtime --region eu-west-1 \
   --agent-runtime-arn "$(tofu output -raw agent_runtime_arn)" \
   --runtime-session-id "$(uuidgen)$(uuidgen)" \
   --cli-binary-format raw-in-base64-out \
-  --payload '{"prompt":"I want a refund for order A1001","actor_id":"C001"}' out.json && cat out.json
+  --payload '{"prompt":"Where is Dr. Evil?","actor_id":"U001"}' out.json && cat out.json
 ```
 
-`--runtime-session-id` needs at least 33 characters, which is why the example joins two UUIDs.
+Documents need a supported extension (`.md`, `.txt`, `.html`, `.pdf`, `.docx`, `.csv`, …). Files without one are skipped and don't show up in the ingestion job's counts.
+
+`--runtime-session-id` needs at least 33 characters, which is why the example joins two UUIDs. Send the same prompt three times in a row to get an answer; the first two return "I'll never tell!".
 
 To roll out code changes, run `./agent/package.sh && tofu apply`. A new zip gets a new S3 object version, and the runtime is updated to point at it. Run `tofu` from the repo root.
 
@@ -149,14 +147,14 @@ The agent:
 - Sends the guardrail on every Converse call.
 - Searches the knowledge base through the gateway tool `Knowledge___search_knowledge_base`, so the Dogwood policies (00, 07) apply to RAG too. If the search is denied or fails, the agent continues without passages. The runtime role is explicitly denied `bedrock:Retrieve`, so this path can't be bypassed.
 - With `enable_contextual_grounding = true`, wraps retrieved passages as `guardContent` with the `grounding_source` qualifier and the question with the `query` qualifier, so the grounding check applies to answers from the knowledge base. By default grounding is off: passages go in as plain context and the question as `guard_content`, which keeps the content filters on it. In evaluation, identical requests with correct answers scored anywhere from 0 to 1, so the check blocked most good answers. Re-test with your documents ingested before turning it on.
-- Returns policy denials to the model as error tool results. The system prompt tells it to hand off to a person instead of retrying.
-- Uses AgentCore Memory, scoped by `actor_id` (the customer) and the runtime session:
+- Returns policy denials to the model as error tool results. The system prompt tells it not to retry. The `ask_question` gate is different: the agent calls it itself for every message classified as a question, and a denial returns "I'll never tell!" without answering.
+- Uses AgentCore Memory, scoped by `actor_id` (the user) and the runtime session:
   - It writes one event per completed turn, containing the question and the final answer. It skips turns the guardrail blocked or that were cut off.
   - When a session starts on a fresh runtime instance, it restores the last `memory_restore_turns` turns.
-  - On the first turn of each session, it retrieves the customer's preferences, facts and past-conversation summaries and passes them to the model as `<customer_notes>`.
+  - On the first turn of each session, it retrieves the user's preferences, facts and past-conversation summaries and passes them to the model as `<user_notes>`.
   - Memory is best-effort. If a memory call fails, the agent logs it and continues without memory.
 
-`actor_id` is required. The runtime is invoked with IAM, so the calling backend must pass the authenticated customer's ID. Never take it from user input. Long-term records can contain personal data the customer typed. Events expire after `memory_event_expiry_days`. Long-term records don't expire on that schedule, so plan for deleting them on request.
+`actor_id` is required. The runtime is invoked with IAM, so the calling backend must pass the authenticated user's ID. Never take it from user input. Long-term records can contain personal data the user typed. Events expire after `memory_event_expiry_days`. Long-term records don't expire on that schedule, so plan for deleting them on request.
 
 Because the user turn uses `guardContent` blocks, the guardrail's input check evaluates only those blocks and skips tool results. Output is still checked on every turn. Passages from searches the model makes itself (as opposed to the prefetch) are not marked as grounding sources.
 
@@ -237,7 +235,6 @@ Everything else is billed per use. Outside the VPC endpoints, idle cost is a few
 
 ## Notes / verify before production
 
-- The order and refund tools in `lambda/tools/handler.py` are stubs. `request_refund_approval` auto-approves refunds up to `auto_approve_refund_cents`. Replace it with a real human or workflow approval.
 - Policies are created with `aws_cloudcontrolapi_resource` (`AWS::BedrockAgentCore::Policy`). The provider's `aws_bedrockagentcore_policy` (6.71) can only send `definition.cedar`, which rejects `temporal`; Dogwood goes in `definition.policy`. Switch back once the provider supports it. `FAIL_ON_ANY_FINDINGS` makes `apply` fail if the service rejects a statement, including "overly permissive" findings for unconditional permits.
 - Policy files whose name starts with `forbid_` after the number are created only after all the others (the permits) are active. Validation checks a new policy against the policies already active, and a forbid on a tool with no permit yet is rejected as "Overly Restrictive". Keep that naming when you add rules.
 - The gateway role needs `bedrock-agentcore:GetWorkloadAccessToken` for temporal policies, in addition to `AuthorizeAction`, `PartiallyAuthorizeActions` and `GetPolicyEngine`.

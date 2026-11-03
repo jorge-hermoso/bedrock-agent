@@ -73,8 +73,7 @@ resource "aws_lambda_function" "tools" {
 
   environment {
     variables = {
-      KNOWLEDGE_BASE_ID         = aws_bedrockagent_knowledge_base.this.id
-      AUTO_APPROVE_REFUND_CENTS = tostring(var.auto_approve_refund_cents)
+      KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.this.id
     }
   }
 
@@ -228,11 +227,13 @@ resource "aws_bedrockagentcore_gateway_target" "knowledge" {
   }
 }
 
-# Target "Orders" -> actions AgentCore::Action::"Orders___<tool>"
-resource "aws_bedrockagentcore_gateway_target" "orders" {
-  name               = local.orders_target
+# Target "Henchman" -> action AgentCore::Action::"Henchman___ask_question"
+# The agent calls it at the start of every turn; Dogwood policy 08 allows it only
+# once the same question has been asked three times in a row. The model never sees it.
+resource "aws_bedrockagentcore_gateway_target" "henchman" {
+  name               = local.henchman_target
   gateway_identifier = aws_bedrockagentcore_gateway.tools.gateway_id
-  description        = "Order lookup and refunds"
+  description        = "The henchman's three question rule"
 
   credential_provider_configuration {
     gateway_iam_role {}
@@ -245,106 +246,15 @@ resource "aws_bedrockagentcore_gateway_target" "orders" {
 
         tool_schema {
           inline_payload {
-            name        = "lookup_order"
-            description = "Look up an order by ID for the given customer."
+            name        = "ask_question"
+            description = "Gate for one user question. Allowed only when the same question has been asked three times in a row."
 
             input_schema {
               type = "object"
               property {
-                name     = "order_id"
-                type     = "string"
-                required = true
-              }
-              property {
-                name     = "customer_id"
-                type     = "string"
-                required = true
-              }
-            }
-
-            output_schema {
-              type = "object"
-              property {
-                name     = "found"
-                type     = "boolean"
-                required = true
-              }
-              property {
-                name = "order_id"
-                type = "string"
-              }
-              property {
-                name = "status"
-                type = "string"
-              }
-              property {
-                name = "total_cents"
-                type = "integer"
-              }
-            }
-          }
-
-          inline_payload {
-            name        = "request_refund_approval"
-            description = "Ask for approval to refund an order. Must be called, and return approved=true, before issue_refund."
-
-            input_schema {
-              type = "object"
-              property {
-                name     = "order_id"
-                type     = "string"
-                required = true
-              }
-              property {
-                name        = "amount_cents"
-                type        = "integer"
-                description = "Refund amount in cents"
-                required    = true
-              }
-              property {
-                name     = "reason"
-                type     = "string"
-                required = true
-              }
-            }
-
-            output_schema {
-              type = "object"
-              property {
-                name     = "approved"
-                type     = "boolean"
-                required = true
-              }
-              property {
-                name = "order_id"
-                type = "string"
-              }
-              property {
-                name = "amount_cents"
-                type = "integer"
-              }
-              property {
-                name = "reason"
-                type = "string"
-              }
-            }
-          }
-
-          inline_payload {
-            name        = "issue_refund"
-            description = "Issue a previously approved refund. order_id and amount_cents must match the approval exactly."
-
-            input_schema {
-              type = "object"
-              property {
-                name     = "order_id"
-                type     = "string"
-                required = true
-              }
-              property {
-                name        = "amount_cents"
-                type        = "integer"
-                description = "Refund amount in cents"
+                name        = "question"
+                type        = "string"
+                description = "The user's question, normalized (lowercase, punctuation and extra spaces removed)"
                 required    = true
               }
             }

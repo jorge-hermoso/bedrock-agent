@@ -29,12 +29,13 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# Invoke responses saved locally (can contain customer data)
+# Invoke responses saved locally (can contain user data)
 out.json
 *.out.json
 
 # Secrets and editor/OS files
 .env
+.envrc
 .env.*
 .DS_Store
 .idea/
